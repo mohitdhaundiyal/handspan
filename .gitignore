@@ -10,3 +10,6 @@ android/.idea/
 android/keystore.properties
 *.jks
 *.keystore
+
+# Store listing assets, kept locally until the app is published on Google Play
+docs/play/
