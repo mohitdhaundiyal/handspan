@@ -1,0 +1,36 @@
+{
+  "sanitizeFileName": [
+    {
+      "input": "report.pdf",
+      "output": "report.pdf"
+    },
+    {
+      "input": "../../etc/passwd",
+      "output": "passwd"
+    },
+    {
+      "input": "..\\..\\boot.ini",
+      "output": "boot.ini"
+    },
+    {
+      "input": ".hidden",
+      "output": "hidden"
+    },
+    {
+      "input": "a/b:c.txt",
+      "output": "b_c.txt"
+    },
+    {
+      "input": "  ",
+      "output": "file"
+    },
+    {
+      "input": "con\u0000trol\n.txt",
+      "output": "control.txt"
+    },
+    {
+      "input": "",
+      "output": "file"
+    }
+  ]
+}

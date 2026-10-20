@@ -1,0 +1,31 @@
+{
+  "maxFramePayload": 8388608,
+  "frames": [
+    {
+      "name": "PING",
+      "type": 2,
+      "json": {},
+      "hex": "00000003027b7d"
+    },
+    {
+      "name": "CLIP",
+      "type": 16,
+      "json": {
+        "id": "7d444840-9dc0-11d1-b245-5ffdce74fad2",
+        "origin": "4deee0f08edcd14eb364952fe2e4e4f4111b549ee30bb7c0f11e638335305f01",
+        "mime": "text/plain",
+        "text": "héllo 👋",
+        "sha256": "241bff4036211b66e25dc44c43c7305feb99e7a62b953f03c3597ad0593c508f"
+      }
+    },
+    {
+      "name": "CHUNK",
+      "type": 35,
+      "xferId": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+      "fileId": "00112233-4455-6677-8899-aabbccddeeff",
+      "offset": 262144,
+      "dataHex": "68656c6c6f",
+      "hex": "0000002e230f1e2d3c4b5a69788796a5b4c3d2e1f000112233445566778899aabbccddeeff000000000004000068656c6c6f"
+    }
+  ]
+}

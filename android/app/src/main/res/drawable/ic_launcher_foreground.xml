@@ -1,0 +1,9 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Two linked rounded panes: a phone and a laptop spanned by one hand-width. -->
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M30,40h22a4,4 0,0 1,4 4v20a4,4 0,0 1,-4 4h-22a4,4 0,0 1,-4 -4v-20a4,4 0,0 1,4 -4zM31,45v18h20v-18z" />
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M64,36h12a4,4 0,0 1,4 4v28a4,4 0,0 1,-4 4h-12a4,4 0,0 1,-4 -4v-28a4,4 0,0 1,4 -4zM65,41v24h10v-24z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M54,53h8v2h-8z" />
+</vector>
