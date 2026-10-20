@@ -3,6 +3,7 @@ package app.handspan.android
 import android.app.Activity
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -48,14 +49,17 @@ class ClipboardSendActivity : Activity() {
 class ShareActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val uris = when (intent.action) {
+        val shared = when (intent.action) {
             Intent.ACTION_SEND -> listOfNotNull(IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java))
             Intent.ACTION_SEND_MULTIPLE -> IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
             else -> emptyList()
         }
+        // Some apps share URIs without granting read access; passing those on would throw.
+        val uris = shared.filter { checkCallingOrSelfUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION) == PackageManager.PERMISSION_GRANTED }
         val text = intent.getStringExtra(Intent.EXTRA_TEXT)
         val message = when {
             !handspan.isPaired -> "Pair Handspan with your Mac first"
+            shared.isNotEmpty() && uris.isEmpty() -> "The sharing app didn't allow Handspan to read this file"
             uris.isNotEmpty() -> {
                 // A share grant ends with this activity; uploads may resume much later,
                 // so hand the URIs (and the grant) to the long-running service.

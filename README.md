@@ -11,6 +11,23 @@ over mDNS and talk over mutual TLS 1.3, with keys pinned when you scan a QR code
 
 Licence: Apache-2.0.
 
+## Download
+
+| Platform | Download | Requires |
+|---|---|---|
+| **Android** | [Handspan.apk](https://github.com/mohitdhaundiyal/handspan/releases/latest/download/Handspan.apk) | Android 10+ |
+| **macOS** | [Handspan-macOS.zip](https://github.com/mohitdhaundiyal/handspan/releases/latest/download/Handspan-macOS.zip) | macOS 13+, Apple silicon or Intel |
+
+All versions and checksums are on the [Releases](https://github.com/mohitdhaundiyal/handspan/releases) page.
+
+**Android:** open the downloaded APK and allow your browser or file manager to install unknown
+apps when Android asks.
+
+**macOS:** unzip and move `Handspan.app` to Applications. The app is not notarized by Apple, so
+the first launch is blocked: open **System Settings → Privacy & Security**, scroll down and click
+**Open Anyway** next to the Handspan message. Alternatively run
+`xattr -dr com.apple.quarantine /Applications/Handspan.app` once.
+
 ## How it works
 
 1. On the Mac, choose **Pair new device…** from the menu-bar icon. A QR code appears, valid for
@@ -37,7 +54,7 @@ concealed.
 
 ```sh
 cd macos
-scripts/bundle.sh            # → build/Handspan.app (ad-hoc signed)
+scripts/bundle.sh            # → build/Handspan.app (universal, ad-hoc signed)
 open build/Handspan.app
 scripts/test.sh              # unit + loopback TLS integration tests
 ```
@@ -56,6 +73,32 @@ cd android
 ./gradlew :core:test           # protocol unit tests (JVM)
 ```
 
+Release builds (`./gradlew :app:assembleRelease`) are minified and need two things that are not
+in the repository:
+
+- `android/keystore.properties` pointing at the release keystore:
+  ```properties
+  storeFile=/absolute/path/to/handspan-release.jks
+  storePassword=…
+  keyAlias=handspan
+  keyPassword=…
+  ```
+  Every release must be signed with the same key, or Android refuses to install it as an update.
+- `handspan.privacyPolicyUrl` in `android/gradle.properties` (already set to
+  [`docs/PRIVACY.md`](docs/PRIVACY.md)).
+
+### Publishing a release
+
+```sh
+(cd macos && scripts/bundle.sh)                       # universal Handspan.app
+(cd android && ./gradlew :app:assembleRelease)
+cp android/app/build/outputs/apk/release/app-release.apk Handspan.apk
+ditto -c -k --keepParent macos/build/Handspan.app Handspan-macOS.zip
+```
+
+Attach `Handspan.apk` and `Handspan-macOS.zip` to a new GitHub release with exactly those names;
+the download links above always point at the latest release.
+
 ### Cross-implementation test
 
 This runs the Kotlin client against the real Swift host over loopback TLS. It covers pairing,
@@ -72,7 +115,7 @@ reaches the Mac at `10.0.2.2`). See [`docs/TESTING.md`](docs/TESTING.md).
 ## Layout
 
 ```
-docs/       SPEC.md, PROTOCOL.md, TESTING.md, research/
+docs/       SPEC.md, PROTOCOL.md, TESTING.md, PRIVACY.md, research/
 protocol/   vectors/*.json, shared by the Swift and Kotlin tests
 macos/      Swift package: HandspanCore, Handspan (menu-bar app), handspan-host (CLI)
 android/    :core (pure Kotlin protocol and client), :app (Compose UI, service, tile, share target)

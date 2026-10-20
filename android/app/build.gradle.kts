@@ -87,7 +87,7 @@ val verifyReleaseConfig by tasks.registering {
     val signed = keystoreProperties.isNotEmpty()
     doLast {
         check(url.startsWith("https://")) { "Set handspan.privacyPolicyUrl=https://… in android/gradle.properties" }
-        check(signed) { "Create android/keystore.properties with the upload key (see docs/PLAY_STORE.md)" }
+        check(signed) { "Create android/keystore.properties with the release key (see README)" }
     }
 }
 tasks.configureEach {
