@@ -19,14 +19,14 @@ Handspan is not on the Google Play Store or the Mac App Store. Download it below
 | Platform | Download | Requires |
 |---|---|---|
 | **Android** | [Handspan.apk](https://github.com/mohitdhaundiyal/handspan/releases/latest/download/Handspan.apk) | Android 10+ |
-| **macOS** | [Handspan-macOS.zip](https://github.com/mohitdhaundiyal/handspan/releases/latest/download/Handspan-macOS.zip) | macOS 13+, Apple silicon or Intel |
+| **macOS** | [Handspan.dmg](https://github.com/mohitdhaundiyal/handspan/releases/latest/download/Handspan.dmg) | macOS 13+, Apple silicon or Intel |
 
 Older versions and checksums are on the Releases page.
 
 **Android:** open the downloaded APK and allow your browser or file manager to install unknown
 apps when Android asks.
 
-**macOS:** unzip and move `Handspan.app` to Applications. The app is not notarized by Apple, so
+**macOS:** open the DMG and drag Handspan onto the Applications folder. The app is not notarized by Apple, so
 the first launch is blocked: open **System Settings → Privacy & Security**, scroll down and click
 **Open Anyway** next to the Handspan message. Alternatively run
 `xattr -dr com.apple.quarantine /Applications/Handspan.app` once.
@@ -57,7 +57,7 @@ concealed.
 
 ```sh
 cd macos
-scripts/bundle.sh            # → build/Handspan.app (universal, ad-hoc signed)
+scripts/bundle.sh            # → build/Handspan.app (universal, ad-hoc signed) and build/Handspan.dmg
 open build/Handspan.app
 scripts/test.sh              # unit + loopback TLS integration tests
 ```
@@ -93,13 +93,13 @@ in the repository:
 ### Publishing a release
 
 ```sh
-(cd macos && scripts/bundle.sh)                       # universal Handspan.app
+(cd macos && scripts/bundle.sh)                       # universal Handspan.app and Handspan.dmg
 (cd android && ./gradlew :app:assembleRelease)
 cp android/app/build/outputs/apk/release/app-release.apk Handspan.apk
-ditto -c -k --keepParent macos/build/Handspan.app Handspan-macOS.zip
+cp macos/build/Handspan.dmg .
 ```
 
-Attach `Handspan.apk` and `Handspan-macOS.zip` to a new GitHub release with exactly those names;
+Attach `Handspan.apk` and `Handspan.dmg` to a new GitHub release with exactly those names;
 the download links above always point at the latest release.
 
 ### Cross-implementation test

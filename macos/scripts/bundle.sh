@@ -1,7 +1,8 @@
 #!/bin/sh
 # Builds Handspan.app from the Swift package without Xcode.
 # Usage: scripts/bundle.sh [debug|release]   (default: release)
-# Release builds are universal (Apple silicon and Intel); debug builds target this Mac only.
+# Release builds are universal (Apple silicon and Intel) and also produce build/Handspan.dmg;
+# debug builds target this Mac only.
 set -eu
 cd "$(dirname "$0")/.."
 config="${1:-release}"
@@ -23,3 +24,15 @@ cp Resources/Info.plist "$app/Contents/Info.plist"
 # Ad-hoc signature. Builds signed with a real Developer ID keep keychain access across updates.
 codesign --force --sign - --timestamp=none "$app"
 echo "Built $app"
+
+if [ "$config" = release ]; then
+    # Disk image with the app next to an Applications link, for drag-to-install.
+    dmg="build/Handspan.dmg"
+    staging="$(mktemp -d)"
+    trap 'rm -rf "$staging"' EXIT
+    cp -R "$app" "$staging/"
+    ln -s /Applications "$staging/Applications"
+    rm -f "$dmg"
+    hdiutil create -quiet -volname Handspan -srcfolder "$staging" -fs HFS+ -format UDZO -ov "$dmg"
+    echo "Built $dmg"
+fi
