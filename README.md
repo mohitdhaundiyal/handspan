@@ -13,12 +13,15 @@ Licence: Apache-2.0.
 
 ## Download
 
+Handspan is not on the Google Play Store or the Mac App Store. Download it below from
+[GitHub Releases](https://github.com/mohitdhaundiyal/handspan/releases), or [build it from source](#build).
+
 | Platform | Download | Requires |
 |---|---|---|
 | **Android** | [Handspan.apk](https://github.com/mohitdhaundiyal/handspan/releases/latest/download/Handspan.apk) | Android 10+ |
 | **macOS** | [Handspan-macOS.zip](https://github.com/mohitdhaundiyal/handspan/releases/latest/download/Handspan-macOS.zip) | macOS 13+, Apple silicon or Intel |
 
-All versions and checksums are on the [Releases](https://github.com/mohitdhaundiyal/handspan/releases) page.
+Older versions and checksums are on the Releases page.
 
 **Android:** open the downloaded APK and allow your browser or file manager to install unknown
 apps when Android asks.
