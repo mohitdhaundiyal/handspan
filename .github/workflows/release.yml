@@ -1,0 +1,134 @@
+name: Release
+
+# Every merge into main whose version has no tag yet is built, signed and published.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      release: ${{ steps.check.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: check
+        run: |
+          version=$(scripts/version.sh)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$version" > /dev/null; then
+            echo "v$version is already released; nothing to do."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  android:
+    name: Android APK
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android platform
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "build-tools;36.0.0" > /dev/null
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          cat > android/keystore.properties <<EOF
+          storeFile=$RUNNER_TEMP/release.jks
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=handspan
+          keyPassword=$KEYSTORE_PASSWORD
+          EOF
+      - name: Build
+        working-directory: android
+        run: |
+          ./gradlew :app:assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/Handspan.apk"
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks" android/keystore.properties
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: ${{ runner.temp }}/Handspan.apk
+          if-no-files-found: error
+
+  macos:
+    name: macOS DMG
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: macos/scripts/bundle.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: macos/build/Handspan.dmg
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [version, android, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          previous=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          {
+            echo "- **Android** (10+): \`Handspan.apk\`"
+            echo "- **macOS** (13+, Apple silicon and Intel): \`Handspan.dmg\`. Open it and drag Handspan to Applications."
+            echo
+            echo "The Mac app is not notarized: on first launch open System Settings → Privacy & Security and click **Open Anyway**."
+            echo
+            if [ -n "$previous" ]; then
+              echo "**Changes:** https://github.com/${{ github.repository }}/compare/$previous...v$VERSION"
+              echo
+            fi
+            echo "SHA-256:"
+            echo '```'
+            (cd dist && sha256sum Handspan.apk Handspan.dmg)
+            echo '```'
+          } > notes.md
+          cat notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" dist/Handspan.apk dist/Handspan.dmg \
+            --target "$GITHUB_SHA" --title "Handspan $VERSION" --notes-file notes.md --latest

@@ -92,15 +92,8 @@ in the repository:
 
 ### Publishing a release
 
-```sh
-(cd macos && scripts/bundle.sh)                       # universal Handspan.app and Handspan.dmg
-(cd android && ./gradlew :app:assembleRelease)
-cp android/app/build/outputs/apk/release/app-release.apk Handspan.apk
-cp macos/build/Handspan.dmg .
-```
-
-Attach `Handspan.apk` and `Handspan.dmg` to a new GitHub release with exactly those names;
-the download links above always point at the latest release.
+Releases are built, signed and published by GitHub Actions when a version bump is merged into
+`main`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch and release workflow.
 
 ### Cross-implementation test
 
@@ -122,5 +115,6 @@ docs/       SPEC.md, PROTOCOL.md, TESTING.md, PRIVACY.md, research/
 protocol/   vectors/*.json, shared by the Swift and Kotlin tests
 macos/      Swift package: HandspanCore, Handspan (menu-bar app), handspan-host (CLI)
 android/    :core (pure Kotlin protocol and client), :app (Compose UI, service, tile, share target)
-scripts/    interop.sh
+scripts/    interop.sh, version.sh
+.github/    CI and release workflows
 ```
