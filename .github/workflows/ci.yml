@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, main]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android platform
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "build-tools;36.0.0" > /dev/null
+      - name: Unit tests, lint and debug build
+        working-directory: android
+        run: ./gradlew :core:test :app:lintDebug :app:assembleDebug
+      - name: Upload lint report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: android/app/build/reports/lint-results-debug.html
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android platform
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" > /dev/null
+      - name: Swift tests
+        run: macos/scripts/test.sh
+      - name: Kotlin client against the Swift host
+        run: scripts/interop.sh
+      - name: Universal app and DMG
+        run: macos/scripts/bundle.sh
+
+  version:
+    name: Release version
+    if: github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Only dev is merged into main
+        if: github.head_ref != 'dev'
+        run: |
+          echo "::error::Pull requests into main must come from dev (this one is from ${{ github.head_ref }})."
+          exit 1
+      - name: Version is bumped and not yet released
+        run: |
+          version=$(scripts/version.sh)
+          code=$(scripts/version.sh code)
+          released=$(git show origin/main:android/app/build.gradle.kts | sed -n 's/.*versionCode = \([0-9]*\).*/\1/p')
+          if git rev-parse -q --verify "refs/tags/v$version" > /dev/null; then
+            echo "::error::v$version is already released. Run scripts/version.sh bump X.Y.Z on a branch into dev."
+            exit 1
+          fi
+          if [ "$code" -le "$released" ]; then
+            echo "::error::Build number $code must be greater than main's $released."
+            exit 1
+          fi
+          echo "Releases v$version (build $code) when merged."
