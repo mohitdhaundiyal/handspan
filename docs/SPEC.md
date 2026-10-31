@@ -222,3 +222,38 @@ handspan/
   API 36 emulator against the Swift host.
 - **Phone send-clipboard activity:** if the clipboard read is refused while the notification shade is
   still closing, it retries briefly (up to 4 tries, 150 ms apart).
+
+## 13. Several Macs and macOS accounts (1.1.0)
+
+A phone can be paired with several Macs, including several accounts on the same Mac, and
+switches between them without pairing again.
+
+### 13.1 Behaviour
+
+- **Phone:** keeps a list of paired Macs. Scanning a pairing code adds a Mac (or refreshes it, if
+  it is already in the list) and never removes another one. Each Mac can be unpaired on its own.
+- **One connection at a time:** the phone connects to one paired Mac. When it is not connected, it
+  tries the Macs that discovery currently sees first, then the others, most recently connected
+  first. Clipboard, text and files go to the connected Mac.
+- **macOS accounts:** Handspan only listens and advertises while its login session is the active
+  one on screen. When the account is switched away from (fast user switching, or the login window),
+  it closes its connections and stops advertising; when the account becomes active again it starts
+  listening again. With two accounts logged in, only the account in front is reachable, so the
+  phone follows whichever account is on screen.
+- **Names:** a Mac identifies itself by its computer name plus the account's first name, for
+  example `Studio Mac (Mohit)`, so the accounts of one Mac can be told apart on the phone. The first
+  name is left out when the computer name already contains it, as in macOS's default
+  `Mohit’s MacBook Air`; another account on that Mac shows as `Mohit’s MacBook Air (Expert)`.
+
+### 13.2 Transfers
+
+- Outgoing files that are still waiting, or were interrupted, are offered to the next Mac the
+  phone connects to. Files that a Mac already verified are not sent again.
+- Incoming transfers are keyed by transfer ID, so a Mac's interrupted transfer resumes when that
+  Mac is connected again, as before.
+
+### 13.3 Compatibility
+
+- The wire protocol does not change. A 1.1 phone works with 1.0 Macs, and a 1.0 phone with a 1.1
+  Mac (it stays paired with one Mac, as before).
+- On upgrade, the phone's existing pairing becomes the first entry of the list.

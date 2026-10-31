@@ -27,8 +27,8 @@ import kotlin.random.Random
 class InteropTest {
     @get:Rule val tmp = TemporaryFolder()
 
-    private lateinit var host: Process
-    private val hostEvents = LinkedBlockingQueue<JsonObject>()
+    private val hosts = mutableListOf<HostProcess>()
+    private lateinit var host: HostProcess
     private val phoneEvents = LinkedBlockingQueue<Pair<String, Any>>()
     private lateinit var client: PhoneClient
 
@@ -40,43 +40,74 @@ class InteropTest {
         override fun onItems(items: List<OfferItem>) { phoneEvents += "items" to items }
         override fun onOffer(offer: Offer, decide: (Boolean) -> Unit) { phoneEvents += "offer" to offer; decide(true) }
         override fun onFileReceived(file: ReceivedFile) { phoneEvents += "file" to file }
+        override fun onHosts(hosts: List<HostPairing>, connectedHostId: String?) { phoneEvents += "connectedTo" to (connectedHostId ?: "") }
         override fun log(message: String) { println("phone: $message") }
     }
 
-    @Before fun startHost() {
+    /** One handspan-host process: a Mac, or one account of a Mac. */
+    private class HostProcess(bin: String, private val label: String) {
+        private val process: Process = ProcessBuilder(bin).redirectError(ProcessBuilder.Redirect.INHERIT).start()
+        private val events = LinkedBlockingQueue<JsonObject>()
+        @Volatile var id: String? = null
+        /** The port it listens on now; null while suspended. */
+        @Volatile var port: Int? = null
+
+        init {
+            Thread {
+                process.inputStream.bufferedReader().forEachLine { line ->
+                    println("$label: $line")
+                    val event = runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull() ?: return@forEachLine
+                    when (event["event"]?.jsonPrimitive?.content) {
+                        "ready" -> id = event.getValue("id").jsonPrimitive.content
+                        "listening" -> port = event.getValue("port").jsonPrimitive.content.toInt()
+                    }
+                    events += event
+                }
+            }.apply { isDaemon = true }.start()
+        }
+
+        val address: String? get() = port?.let { "127.0.0.1:$it" }
+
+        fun command(line: String) {
+            if (line == "suspend") port = null
+            process.outputStream.write("$line\n".toByteArray())
+            process.outputStream.flush()
+        }
+
+        fun event(name: String, timeoutSec: Long = 20): JsonObject {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSec)
+            while (System.nanoTime() < deadline) {
+                val e = events.poll(100, TimeUnit.MILLISECONDS) ?: continue
+                if (e["event"]?.jsonPrimitive?.content == name) return e
+            }
+            throw AssertionError("$label never emitted '$name'")
+        }
+
+        fun stop() {
+            runCatching { command("quit") }
+            process.waitFor(5, TimeUnit.SECONDS)
+            process.destroyForcibly()
+        }
+    }
+
+    private fun startHost(label: String): HostProcess {
         val bin = System.getProperty("handspan.hostBin")
         assumeTrue("set HANDSPAN_HOST_BIN (scripts/interop.sh) to run", bin != null)
-        host = ProcessBuilder(bin).redirectError(ProcessBuilder.Redirect.INHERIT).start()
-        Thread {
-            host.inputStream.bufferedReader().forEachLine { line ->
-                println("host: $line")
-                runCatching { hostEvents += Json.parseToJsonElement(line).jsonObject }
-            }
-        }.apply { isDaemon = true }.start()
+        return HostProcess(bin, label).also { hosts += it }
     }
 
-    @After fun stopHost() {
+    @Before fun startFirstHost() {
+        host = startHost("host")
+    }
+
+    @After fun stopAll() {
         if (::client.isInitialized) client.stop()
-        if (::host.isInitialized) {
-            runCatching { command("quit") }
-            host.waitFor(5, TimeUnit.SECONDS)
-            host.destroyForcibly()
-        }
+        hosts.forEach(HostProcess::stop)
     }
 
-    private fun command(line: String) {
-        host.outputStream.write("$line\n".toByteArray())
-        host.outputStream.flush()
-    }
+    private fun command(line: String) = host.command(line)
 
-    private fun hostEvent(name: String, timeoutSec: Long = 20): JsonObject {
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSec)
-        while (System.nanoTime() < deadline) {
-            val e = hostEvents.poll(100, TimeUnit.MILLISECONDS) ?: continue
-            if (e["event"]?.jsonPrimitive?.content == name) return e
-        }
-        throw AssertionError("host never emitted '$name'")
-    }
+    private fun hostEvent(name: String, timeoutSec: Long = 20) = host.event(name, timeoutSec)
 
     @Suppress("UNCHECKED_CAST")
     private fun <T> phoneEvent(name: String, timeoutSec: Long = 20): T {
@@ -131,9 +162,9 @@ class InteropTest {
         }
     }
 
-    private class MemoryStore(@Volatile var value: HostPairing? = null) : PairingStore {
+    private class MemoryStore(@Volatile var value: List<HostPairing> = emptyList()) : PairingStore {
         override fun load() = value
-        override fun save(pairing: HostPairing?) { value = pairing }
+        override fun save(hosts: List<HostPairing>) { value = hosts }
     }
 
     private fun waitForStatus(status: PhoneClient.Status) {
@@ -141,6 +172,21 @@ class InteropTest {
             val (name, value) = phoneEvents.poll(20, TimeUnit.SECONDS) ?: throw AssertionError("never reached $status")
             if (name == "status" && value == status) return
         }
+    }
+
+    private fun waitForConnection(to: HostProcess) {
+        while (true) {
+            val (name, value) = phoneEvents.poll(30, TimeUnit.SECONDS) ?: throw AssertionError("never connected to ${to.id}")
+            if (name == "pairFailed") throw AssertionError("pairing failed: $value")
+            if (name == "connectedTo" && value == to.id) return
+        }
+    }
+
+    private fun pairWith(h: HostProcess) {
+        h.command("pair")
+        client.pair(PairingInvite.parse(h.event("pairing").getValue("uri").jsonPrimitive.content)!!)
+        phoneEvent<String>("paired")
+        h.event("paired")
     }
 
     /**
@@ -162,16 +208,17 @@ class InteropTest {
 
         val dead = "[2001:db8::7a6c]:$port"
         val good = "127.0.0.1:$port"
+        val paired = store.value.single()
         phoneEvents.clear()
-        val remembered = MemoryStore(store.value!!.copy(lastAddress = dead, addresses = listOf(dead, good)))
+        val remembered = MemoryStore(listOf(paired.copy(lastAddress = dead, addresses = listOf(dead, good))))
         client = PhoneClient(identity, "Interop Phone", remembered, tmp.newFolder("parts2"), DirectorySink(tmp.newFolder("dl2")), listener)
         client.start()
         waitForStatus(PhoneClient.Status.CONNECTED)
-        assertEquals(good, remembered.value!!.lastAddress)
+        assertEquals(good, remembered.value.single().lastAddress)
         client.stop()
 
         phoneEvents.clear()
-        val discoveredOnly = MemoryStore(store.value!!.copy(lastAddress = dead, addresses = emptyList()))
+        val discoveredOnly = MemoryStore(listOf(paired.copy(lastAddress = dead, addresses = emptyList())))
         client = PhoneClient(identity, "Interop Phone", discoveredOnly, tmp.newFolder("parts3"), DirectorySink(tmp.newFolder("dl3")), listener,
             discoveredAddresses = { listOf(good) })
         client.start()
@@ -183,11 +230,7 @@ class InteropTest {
         command("pair")
         val invite = PairingInvite.parse(hostEvent("pairing").str("uri"))!!
 
-        val store = object : PairingStore {
-            @Volatile var value: HostPairing? = null
-            override fun load() = value
-            override fun save(pairing: HostPairing?) { value = pairing }
-        }
+        val store = MemoryStore()
         val received = tmp.newFolder("phone-downloads")
         client = PhoneClient(SelfSignedCert.generate(), "Interop Phone", store, tmp.newFolder("parts"), DirectorySink(received), listener)
         client.start()
@@ -196,7 +239,7 @@ class InteropTest {
         // Both implementations derive the same confirmation code.
         val phoneCode: String = phoneEvent("paired")
         assertEquals(phoneCode, hostEvent("paired").str("code"))
-        assertEquals(invite.hostId, store.value!!.hostId)
+        assertEquals(invite.hostId, store.value.single().hostId)
 
         // Clipboard both ways.
         client.localClipboardChanged("héllo from kotlin 👋")
@@ -232,5 +275,47 @@ class InteropTest {
         val got: ReceivedFile = phoneEvent("file", timeoutSec = 30)
         assertArrayEquals(outgoing.readBytes(), File(got.location).readBytes())
         assertEquals("from-mac.bin", got.displayName)
+    }
+
+    /**
+     * Two accounts on one Mac, each running Handspan: only the account on screen listens
+     * (the other is suspended). The phone pairs with both once, then follows account
+     * switches in both directions without pairing again.
+     */
+    @Test fun followsTheActiveMacAccount() {
+        val first = host.also { it.event("ready") }
+        val second = startHost("second").also { it.event("ready") }
+        val store = MemoryStore()
+        client = PhoneClient(
+            SelfSignedCert.generate(), "Interop Phone", store, tmp.newFolder("parts"), DirectorySink(tmp.newFolder("dl")), listener,
+            discoveredAddresses = { id -> hosts.filter { it.id == id }.mapNotNull { it.address } },
+        )
+        client.start()
+
+        pairWith(first)
+        first.command("suspend")
+        pairWith(second)
+        assertEquals(listOf(second.id, first.id), store.value.map { it.hostId })
+
+        var switches = 0
+        fun switchTo(active: HostProcess, inactive: HostProcess) {
+            switches++
+            inactive.command("suspend")
+            active.command("resume")
+            active.event("listening")
+            client.wake()
+            waitForConnection(active)
+            // Unique texts: both sides ignore a clip they have just sent or applied.
+            active.command("clip mac $switches")
+            assertEquals("mac $switches", phoneEvent<String>("clip"))
+            client.localClipboardChanged("phone $switches")
+            assertEquals("phone $switches", active.event("clip").str("text"))
+        }
+
+        switchTo(first, second)
+        switchTo(second, first)
+        switchTo(first, second)
+        assertEquals(setOf(first.id, second.id), store.value.map { it.hostId }.toSet())
+        assertEquals(first.id, store.value.first().hostId)
     }
 }

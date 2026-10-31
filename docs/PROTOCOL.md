@@ -27,8 +27,11 @@ paired with at most one host.
   - `v=1`
   - `id=<first 16 hex chars of the host device ID>`
   - `n=<host display name>`
-- The phone browses for the service and connects only to instances whose `id` prefix matches its
-  paired host. Fallbacks, in order: the last address that worked, then the hosts from the QR code.
+- The phone browses for the service and connects only to instances whose `id` prefix matches one of
+  its paired hosts. Fallbacks, in order: the last address that worked, then the other addresses the
+  host was reached at, including the hosts from the QR code.
+- A host advertises and accepts connections only while its macOS login session is active, so at most
+  one account of a Mac is reachable at a time.
 
 ## 3. Pairing QR code
 

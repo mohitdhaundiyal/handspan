@@ -26,6 +26,7 @@ final class AppModel: ObservableObject, HostDelegate {
     private(set) var host: HostService?
     private let watcher = PasteboardWatcher()
     private var watcherFast = false
+    private var sessionObservers: [NSObjectProtocol] = []
 
     static let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Handspan", isDirectory: true)
@@ -33,15 +34,16 @@ final class AppModel: ObservableObject, HostDelegate {
         .appendingPathComponent("Handspan", isDirectory: true)
 
     init() {
-        let name = Host.current().localizedName ?? "Mac"
         do {
-            let host = try HostService(config: .init(name: name, downloadsDir: Self.downloadsDir, stateDir: Self.stateDir))
+            let host = try HostService(config: .init(name: Self.displayName, downloadsDir: Self.downloadsDir, stateDir: Self.stateDir))
             host.delegate = self
+            if !Self.sessionIsActive { host.suspend() }
             host.start()
             self.host = host
         } catch {
             startupError = "Could not load this Mac's identity: \(error)"
         }
+        observeAccountSwitches()
         watcher.onText = { [weak self] text in self?.host?.localClipboardChanged(text) }
         watcher.start(interval: 2)
         if Bundle.main.bundleIdentifier != nil {
@@ -168,6 +170,34 @@ final class AppModel: ObservableObject, HostDelegate {
     }
 
     // MARK: Helpers
+
+    /// Tells the accounts of one Mac apart on the phone: the computer name, plus the
+    /// account's first name unless the computer name already contains it, as macOS's
+    /// default "Mohit’s MacBook Air" does for its owner.
+    private static var displayName: String {
+        let computer = Host.current().localizedName ?? "Mac"
+        let user = NSFullUserName().split(separator: " ").first.map(String.init) ?? NSUserName()
+        return computer.localizedCaseInsensitiveContains(user) ? computer : "\(computer) (\(user))"
+    }
+
+    /// False while another account is in front (fast user switching or the login window).
+    private static var sessionIsActive: Bool {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return true }
+        return session[kCGSessionOnConsoleKey] as? Bool ?? true
+    }
+
+    /// Only the account on screen accepts connections, so the phone follows account switches.
+    private func observeAccountSwitches() {
+        let center = NSWorkspace.shared.notificationCenter
+        sessionObservers = [
+            center.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.host?.suspend() }
+            },
+            center.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.host?.resume() }
+            },
+        ]
+    }
 
     private func add(_ item: RecentItem) {
         recent.insert(item, at: 0)

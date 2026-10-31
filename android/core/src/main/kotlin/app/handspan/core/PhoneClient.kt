@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLSocket
 
 /**
- * The Mac this phone is paired with, plus every address it has been reached at
+ * A Mac this phone is paired with, plus every address it has been reached at
  * (most recent first) so a reconnect still works when mDNS does not.
  */
 @Serializable
@@ -37,9 +37,10 @@ data class HostPairing(
     }
 }
 
+/** The paired Macs, most recently connected first. */
 interface PairingStore {
-    fun load(): HostPairing?
-    fun save(pairing: HostPairing?)
+    fun load(): List<HostPairing>
+    fun save(hosts: List<HostPairing>)
 }
 
 /** Callbacks run on the client's core thread; platform code should hop to its UI thread. */
@@ -47,7 +48,9 @@ interface PhoneListener {
     fun onStatus(status: PhoneClient.Status) {}
     fun onPaired(hostName: String, code: String) {}
     fun onPairingFailed(reason: String) {}
-    fun onUnpaired() {}
+    fun onUnpaired(hostName: String) {}
+    /** The paired Macs changed, or the phone connected to or disconnected from one. */
+    fun onHosts(hosts: List<HostPairing>, connectedHostId: String?) {}
     fun onClipboard(text: String) {}
     fun onItems(items: List<OfferItem>) {}
     /** Called for offers containing files. Call [decide] exactly once, from any thread. */
@@ -58,8 +61,12 @@ interface PhoneListener {
 }
 
 /**
- * The phone side of Handspan (PROTOCOL §4): dials the paired Mac, keeps the
+ * The phone side of Handspan (PROTOCOL §4): dials a paired Mac, keeps the
  * connection alive, syncs the clipboard and moves files in both directions.
+ *
+ * The phone can be paired with several Macs (or macOS accounts) but is connected
+ * to one at a time: whichever paired Mac is reachable, preferring the ones
+ * discovery currently sees, then the most recently connected.
  * All mutable state is confined to the single [core] thread.
  */
 class PhoneClient(
@@ -69,8 +76,8 @@ class PhoneClient(
     partsDir: File,
     private val sink: ReceivedFileSink,
     private val listener: PhoneListener,
-    /** Addresses found by discovery for the paired host ID, freshest first. */
-    private val discoveredAddresses: () -> List<String> = { emptyList() },
+    /** Addresses discovery currently sees for a paired host ID, freshest first. */
+    private val discoveredAddresses: (hostId: String) -> List<String> = { emptyList() },
 ) {
     enum class Status { UNPAIRED, OFFLINE, CONNECTING, CONNECTED }
 
@@ -81,8 +88,9 @@ class PhoneClient(
     private val running = AtomicBoolean(false)
     private val nudge = java.util.concurrent.Semaphore(0)
 
-    private var pairing: HostPairing? = pairingStore.load()
+    private var hosts: List<HostPairing> = pairingStore.load()
     private var link: Link? = null
+    private var connectedHostId: String? = null
     private var status = Status.OFFLINE
     private val incoming = IncomingStore(partsDir)
     private val outgoing = linkedMapOf<String, OutgoingTransfer>()
@@ -99,7 +107,8 @@ class PhoneClient(
         if (!running.compareAndSet(false, true)) return
         post {
             incoming.purge(24 * 3600_000L)
-            setStatus(if (pairing == null) Status.UNPAIRED else Status.OFFLINE)
+            setStatus(if (hosts.isEmpty()) Status.UNPAIRED else Status.OFFLINE)
+            pushHosts()
         }
         core.scheduleWithFixedDelay(::tick, PING_INTERVAL_MS, PING_INTERVAL_MS, TimeUnit.MILLISECONDS)
         Thread(::connectLoop, "handspan-connector").apply { isDaemon = true }.start()
@@ -121,11 +130,14 @@ class PhoneClient(
         }
     }
 
-    /** Retry now: the network changed or discovery saw the host. */
+    /** Retry now: the network changed or discovery saw a paired host. */
     fun wake() = nudge.release()
 
 
-    /** Pairs with the host in [invite]; result arrives via [PhoneListener.onPaired] / [PhoneListener.onPairingFailed]. */
+    /**
+     * Pairs with the host in [invite] and connects to it, keeping any other paired Macs.
+     * The result arrives via [PhoneListener.onPaired] / [PhoneListener.onPairingFailed].
+     */
     fun pair(invite: PairingInvite, extraAddresses: List<String> = emptyList()) {
         io.execute {
             val candidates = (invite.hosts + extraAddresses).distinct()
@@ -154,10 +166,9 @@ class PhoneClient(
                         val code = PairingInvite.confirmCode(invite.secret, invite.hostId, deviceId)
                         val paired = HostPairing(invite.hostId, hello.name, addresses = invite.hosts).remember(address)
                         post {
-                            pairing = paired
-                            pairingStore.save(paired)
+                            setHosts(listOf(paired) + hosts.filterNot { it.hostId == paired.hostId })
                             listener.onPaired(hello.name, code)
-                            attach(l, address)
+                            attach(l, paired.hostId, address)
                         }
                         return@execute
                     } catch (e: IOException) {
@@ -173,9 +184,9 @@ class PhoneClient(
         }
     }
 
-    fun unpair() = post {
-        link?.let { l -> runCatching { l.write(Frame.empty(FrameType.UNPAIRED)) }; l.close() }
-        forgetPairing()
+    fun unpair(hostId: String) = post {
+        if (hostId == connectedHostId) link?.let { l -> runCatching { l.write(Frame.empty(FrameType.UNPAIRED)) } }
+        forget(hostId)
     }
 
     /** Drops the current connection as if the network went away. Test hook. */
@@ -244,53 +255,73 @@ class PhoneClient(
     private fun connectLoopBody() {
         var backoff = 0
         while (running.get()) {
-            val target = onCore { if (link == null) pairing else null }
-            if (target == null) {
+            val targets = onCore { if (link == null) hosts else emptyList() }
+            if (targets.isEmpty()) {
                 waitForNudge(30_000)
                 backoff = 0
                 continue
             }
-            onCore { setStatus(Status.CONNECTING) }
-            val candidates = (discoveredAddresses() + target.knownAddresses).distinct()
-            var connected = false
-            for (address in candidates) {
-                if (!running.get()) return
-                val (host, port) = parseHostPort(address) ?: continue
-                try {
-                    val l = Link.open(host, port, identity, target.hostId)
-                    try {
-                        l.write(frameOf(FrameType.HELLO, Hello(1, deviceId, deviceName, "android")))
-                        val hello = l.readHandshake(FrameType.HELLO).decode<Hello>()
-                        if (hello.id != target.hostId) throw ProtocolException("host id mismatch")
-                        if (hello.paired == false) {
-                            l.close()
-                            onCore { forgetPairing() }
-                            connected = true
-                            break
-                        }
-                        onCore {
-                            if (hello.name != target.hostName || address != target.lastAddress) {
-                                pairing = target.copy(hostName = hello.name).remember(address).also(pairingStore::save)
-                            }
-                            attach(l, address)
-                        }
-                        connected = true
-                        break
-                    } catch (e: IOException) {
-                        l.close()
-                        throw e
-                    }
-                } catch (e: IOException) {
-                    listener.log("Connect to $address failed: ${e.message}")
-                }
-            }
-            if (connected) {
+            onCore { if (link == null) setStatus(Status.CONNECTING) }
+            if (connectToAny(targets)) {
                 backoff = 0
             } else {
-                onCore { if (link == null && pairing != null) setStatus(Status.OFFLINE) }
+                onCore { if (link == null && hosts.isNotEmpty()) setStatus(Status.OFFLINE) }
                 waitForNudge(BACKOFF_MS[backoff.coerceAtMost(BACKOFF_MS.lastIndex)])
                 backoff++
             }
+        }
+    }
+
+    /**
+     * Tries the hosts discovery currently sees first, then the rest, each in most
+     * recently connected order. Returns true once connected, or once the pairings
+     * changed and the targets should be recomputed.
+     */
+    private fun connectToAny(targets: List<HostPairing>): Boolean {
+        val found = targets.associate { it.hostId to discoveredAddresses(it.hostId) }
+        for (target in targets.sortedByDescending { found.getValue(it.hostId).isNotEmpty() }) {
+            for (address in (found.getValue(target.hostId) + target.knownAddresses).distinct()) {
+                if (!running.get()) return true
+                if (tryConnect(target, address) != Attempt.FAILED) return true
+            }
+        }
+        return false
+    }
+
+    /** CONNECTED also covers a lost race with pair() or unpair(); UNPAIRED means the Mac forgot this phone. */
+    private enum class Attempt { CONNECTED, UNPAIRED, FAILED }
+
+    private fun tryConnect(target: HostPairing, address: String): Attempt {
+        val (host, port) = parseHostPort(address) ?: return Attempt.FAILED
+        try {
+            val l = Link.open(host, port, identity, target.hostId)
+            try {
+                l.write(frameOf(FrameType.HELLO, Hello(1, deviceId, deviceName, "android")))
+                val hello = l.readHandshake(FrameType.HELLO).decode<Hello>()
+                if (hello.id != target.hostId) throw ProtocolException("host id mismatch")
+                if (hello.paired == false) {
+                    l.close()
+                    onCore { forget(target.hostId) }
+                    return Attempt.UNPAIRED
+                }
+                val attached = onCore {
+                    val current = hosts.firstOrNull { it.hostId == target.hostId }
+                    // Unpaired, or connected through pair(), while this attempt was running.
+                    if (current == null || link != null) return@onCore false
+                    val updated = current.copy(hostName = hello.name).remember(address)
+                    setHosts(listOf(updated) + hosts.filterNot { it.hostId == updated.hostId })
+                    attach(l, updated.hostId, address)
+                    true
+                }
+                if (!attached) l.close()
+                return Attempt.CONNECTED
+            } catch (e: IOException) {
+                l.close()
+                throw e
+            }
+        } catch (e: IOException) {
+            listener.log("Connect to $address failed: ${e.message}")
+            return Attempt.FAILED
         }
     }
 
@@ -301,10 +332,12 @@ class PhoneClient(
 
     private fun <T> onCore(block: () -> T): T = core.submit(block).get()
 
-    private fun attach(l: Link, address: String) {
+    private fun attach(l: Link, hostId: String, address: String) {
         link?.close()
         link = l
+        connectedHostId = hostId
         setStatus(Status.CONNECTED)
+        pushHosts()
         listener.log("Connected to $address")
         l.startReading(
             onFrame = { frame -> post { if (link === l) handle(l, frame) } },
@@ -323,21 +356,44 @@ class PhoneClient(
     private fun detached(l: Link, error: Throwable?) {
         if (link !== l) return
         link = null
+        connectedHostId = null
         outgoing.values.forEach { it.generation++ }
         listener.log("Disconnected${error?.let { ": ${it.message}" } ?: ""}")
-        setStatus(if (pairing == null) Status.UNPAIRED else Status.OFFLINE)
+        setStatus(if (hosts.isEmpty()) Status.UNPAIRED else Status.OFFLINE)
+        pushHosts()
         wake()
     }
 
-    private fun forgetPairing() {
-        pairing = null
-        pairingStore.save(null)
-        outgoing.values.toList().forEach { fail(it, "Unpaired") }
-        link?.close()
-        link = null
-        setStatus(Status.UNPAIRED)
-        listener.onUnpaired()
+    /** Removes a pairing, from either side. Pending uploads wait for another paired Mac. */
+    private fun forget(hostId: String) {
+        val host = hosts.firstOrNull { it.hostId == hostId } ?: return
+        setHosts(hosts - host)
+        if (hostId == connectedHostId) {
+            link?.close()
+            link = null
+            connectedHostId = null
+            outgoing.values.forEach { it.generation++ }
+        }
+        if (hosts.isEmpty()) outgoing.values.toList().forEach { fail(it, "Unpaired") }
+        setStatus(
+            when {
+                hosts.isEmpty() -> Status.UNPAIRED
+                link != null -> Status.CONNECTED
+                else -> Status.OFFLINE
+            },
+        )
+        pushHosts()
+        listener.onUnpaired(host.hostName)
+        wake()
     }
+
+    private fun setHosts(list: List<HostPairing>) {
+        hosts = list
+        pairingStore.save(list)
+        pushHosts()
+    }
+
+    private fun pushHosts() = listener.onHosts(hosts, connectedHostId)
 
     private fun tick() {
         val l = link ?: return
@@ -376,7 +432,7 @@ class PhoneClient(
                 FrameType.VERIFIED -> handleVerified(frame.decode())
                 FrameType.HASH_FAIL -> handleHashFail(frame.decode())
                 FrameType.CANCEL -> handleCancel(frame.decode())
-                FrameType.UNPAIRED -> forgetPairing()
+                FrameType.UNPAIRED -> connectedHostId?.let(::forget)
                 FrameType.PAIR_REQUEST, FrameType.PAIR_RESULT -> Unit
             }
         } catch (e: Exception) {

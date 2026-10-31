@@ -4,8 +4,12 @@ import Security
 
 // Headless host for interop tests (scripts/interop.sh) and debugging.
 // Uses a throwaway keychain and state directory, auto-accepts files, prints
-// one JSON object per event on stdout and reads commands from stdin:
-//   pair | clip <text> | text <text> | send <path> | quit
+// one JSON object per event on stdout and reads commands from stdin.
+// Options: --advertise (Bonjour), --port <n> (preferred port; default: any),
+// --name <name> (default: "Interop Mac").
+// Commands:
+//   pair | clip <text> | text <text> | send <path> | suspend | resume | quit
+// `suspend` and `resume` act like switching to another macOS account and back.
 
 setvbuf(stdout, nil, _IOLBF, 0)
 
@@ -25,7 +29,13 @@ guard keychainStatus == errSecSuccess, let keychain else {
 
 final class Events: HostDelegate {
     var paired: [String] = []
+    private var port: UInt16?
+
     func hostDidChange(_ s: HostService.Snapshot) {
+        if s.port != port {
+            port = s.port
+            if let port { emit(["event": "listening", "port": Int(port)]) }
+        }
         for t in s.transfers where t.status == .done { emitOnce("done:\(t.id)", ["event": "transfer_done", "xferId": t.id, "direction": t.direction.rawValue]) }
         for t in s.transfers { if case let .failed(r) = t.status { emitOnce("fail:\(t.id)", ["event": "transfer_failed", "xferId": t.id, "reason": r]) } }
     }
@@ -53,10 +63,16 @@ final class Events: HostDelegate {
     }
 }
 
-var config = HostService.Config(name: "Interop Mac", downloadsDir: root.appendingPathComponent("Downloads"),
+func option(_ name: String) -> String? {
+    let args = CommandLine.arguments
+    guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }
+    return args[i + 1]
+}
+
+var config = HostService.Config(name: option("--name") ?? "Interop Mac", downloadsDir: root.appendingPathComponent("Downloads"),
                                 stateDir: root.appendingPathComponent("State"), keychain: keychain)
 config.advertise = CommandLine.arguments.contains("--advertise")
-config.preferredPort = 0
+config.preferredPort = option("--port").flatMap(UInt16.init) ?? 0
 let host = try HostService(config: config)
 let events = Events()
 host.delegate = events
@@ -92,6 +108,8 @@ Thread.detachNewThread {
             case "clip": host.localClipboardChanged(arg)
             case "text": host.sendText(arg, to: target)
             case "send": host.sendFiles([URL(fileURLWithPath: arg)], to: target)
+            case "suspend": host.suspend()
+            case "resume": host.resume()
             case "quit":
                 host.stop()
                 SecKeychainDelete(keychain)

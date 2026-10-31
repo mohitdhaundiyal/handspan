@@ -26,10 +26,33 @@ Older versions and checksums are on the Releases page.
 **Android:** open the downloaded APK and allow your browser or file manager to install unknown
 apps when Android asks.
 
-**macOS:** open the DMG and drag Handspan onto the Applications folder. The app is not notarized by Apple, so
-the first launch is blocked: open **System Settings → Privacy & Security**, scroll down and click
-**Open Anyway** next to the Handspan message. Alternatively run
-`xattr -dr com.apple.quarantine /Applications/Handspan.app` once.
+**macOS:** open the DMG and drag Handspan onto the Applications folder. Always launch it from
+Applications, not from the open disk image: macOS runs apps started from a disk image from a
+temporary copy, and an approval for one copy does not carry over to the next.
+
+The app is not notarized by Apple, so macOS blocks the first launch. Allow it once in either way:
+
+- **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to the
+  Handspan message. On a standard (non-administrator) account this asks for an administrator's
+  name and password.
+- Or in Terminal: `xattr -dr com.apple.quarantine /Applications/Handspan.app`
+
+Installed in `/Applications`, Handspan works for every account on the Mac. Without an
+administrator, install it for your account only:
+
+```sh
+mkdir -p ~/Applications
+cp -R /Volumes/Handspan/Handspan.app ~/Applications/
+xattr -dr com.apple.quarantine ~/Applications/Handspan.app
+open ~/Applications/Handspan.app
+```
+
+If macOS keeps saying **"Handspan can't be opened"** after you allowed it, an earlier blocked copy
+is still pending: eject the Handspan disk image, log out and back in, then open the copy in
+Applications.
+
+Several accounts can run Handspan at the same time, and one phone can pair with each of them; see
+[Several Macs and accounts](#several-macs-and-accounts).
 
 ## How it works
 
@@ -50,6 +73,16 @@ the first launch is blocked: open **System Settings → Privacy & Security**, sc
 Files are sent in 256 KiB chunks and checked with SHA-256. An interrupted transfer resumes where it
 stopped once the devices reconnect. The Mac skips clipboard items that password managers mark as
 concealed.
+
+### Several Macs and accounts
+
+A phone can be paired with several Macs, and with several accounts on the same Mac: in the app,
+tap **Pair another Mac** and scan that Mac's code. Your other Macs stay paired.
+
+The phone is connected to one Mac at a time, whichever paired Mac is reachable. On a Mac with
+several accounts logged in, Handspan only accepts connections in the account on screen, so when you
+switch accounts the phone follows within a few seconds, without pairing again. Each account shows
+up on the phone under its own name, such as `Mohit’s MacBook Air` and `Mohit’s MacBook Air (Expert)`.
 
 ## Build
 
