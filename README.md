@@ -73,6 +73,16 @@ Files are sent in 256 KiB chunks and checked with SHA-256. An interrupted transf
 stopped once the devices reconnect. The Mac skips clipboard items that password managers mark as
 concealed.
 
+### Several Macs and accounts
+
+A phone can be paired with several Macs, and with several accounts on the same Mac: in the app,
+tap **Pair another Mac** and scan that Mac's code. Your other Macs stay paired.
+
+The phone is connected to one Mac at a time, whichever paired Mac is reachable. On a Mac with
+several accounts logged in, Handspan only accepts connections in the account on screen, so when you
+switch accounts the phone follows within a few seconds, without pairing again. Each account shows
+up on the phone under its own name, such as `Mohit’s MacBook Air` and `Mohit’s MacBook Air (Expert)`.
+
 ## Build
 
 ### macOS (no Xcode required)

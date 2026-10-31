@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Notes
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
@@ -73,6 +74,7 @@ import app.handspan.android.HandspanService
 import app.handspan.android.Received
 import app.handspan.android.UiEvent
 import app.handspan.android.handspan
+import app.handspan.core.HostPairing
 import app.handspan.core.PhoneClient
 import app.handspan.core.TransferProgress
 
@@ -84,6 +86,9 @@ fun HandspanScreen() {
     val pairing by h.pairingInProgress.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     val pairedDialog by h.pairedResult.collectAsState()
+    var addingMac by remember { mutableStateOf(false) }
+
+    LaunchedEffect(pairedDialog) { if (pairedDialog != null) addingMac = false }
 
     LaunchedEffect(Unit) {
         h.events.collect { event ->
@@ -105,13 +110,18 @@ fun HandspanScreen() {
 
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
-            if (status == PhoneClient.Status.UNPAIRED) PairScreen(pairing) else HomeScreen(status)
+            when {
+                status == PhoneClient.Status.UNPAIRED -> PairScreen(pairing, onCancel = null)
+                addingMac -> PairScreen(pairing, onCancel = { addingMac = false })
+                else -> HomeScreen(status, onPairAnother = { addingMac = true })
+            }
         }
     }
 }
 
+/** First pairing, or, with [onCancel], pairing an additional Mac. */
 @Composable
-private fun PairScreen(pairing: Boolean) {
+private fun PairScreen(pairing: Boolean, onCancel: (() -> Unit)?) {
     val context = LocalContext.current
     var scanning by remember { mutableStateOf(false) }
     Column(
@@ -119,11 +129,19 @@ private fun PairScreen(pairing: Boolean) {
         verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("Handspan", style = MaterialTheme.typography.headlineMedium)
-        Text(
-            "Share your clipboard, links and files with your Mac over your local Wi-Fi. Nothing leaves your network.",
-            style = MaterialTheme.typography.bodyLarge,
-        )
+        if (onCancel == null) {
+            Text("Handspan", style = MaterialTheme.typography.headlineMedium)
+            Text(
+                "Share your clipboard, links and files with your Mac over your local Wi-Fi. Nothing leaves your network.",
+                style = MaterialTheme.typography.bodyLarge,
+            )
+        } else {
+            Text("Pair another Mac", style = MaterialTheme.typography.headlineMedium)
+            Text(
+                "Pair with another Mac, or another account on the same Mac. Your other Macs stay paired, and the phone connects to whichever one is active.",
+                style = MaterialTheme.typography.bodyLarge,
+            )
+        }
         when {
             pairing -> {
                 Spacer(Modifier.size(24.dp))
@@ -144,6 +162,7 @@ private fun PairScreen(pairing: Boolean) {
             else -> {
                 Text("Install Handspan on your Mac, make sure both devices are on the same network, then scan the pairing code.")
                 Button(onClick = { scanning = true }) { Text("Scan pairing code") }
+                if (onCancel != null) TextButton(onClick = onCancel) { Text("Cancel") }
             }
         }
     }
@@ -151,16 +170,17 @@ private fun PairScreen(pairing: Boolean) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HomeScreen(status: PhoneClient.Status) {
+private fun HomeScreen(status: PhoneClient.Status, onPairAnother: () -> Unit) {
     val context = LocalContext.current
     val h = context.handspan
     val host by h.hostName.collectAsState()
+    val hosts by h.hosts.collectAsState()
+    val connectedHostId by h.connectedHostId.collectAsState()
     val sync by h.syncEnabled.collectAsState()
     val transfers by h.transfers.collectAsState()
     val received by h.received.collectAsState()
     val offers by h.offers.collectAsState()
-    var menu by remember { mutableStateOf(false) }
-    var confirmUnpair by remember { mutableStateOf(false) }
+    var confirmUnpair by remember { mutableStateOf<HostPairing?>(null) }
     var composeText by remember { mutableStateOf(false) }
     val connected = status == PhoneClient.Status.CONNECTED
 
@@ -180,13 +200,13 @@ private fun HomeScreen(status: PhoneClient.Status) {
             dismissButton = { TextButton(onClick = { h.answer(pending.offer.xferId, false) }) { Text("Decline") } },
         )
     }
-    if (confirmUnpair) {
+    confirmUnpair?.let { mac ->
         AlertDialog(
-            onDismissRequest = { confirmUnpair = false },
-            title = { Text("Unpair from ${host ?: "Mac"}?") },
-            text = { Text("You will need to scan a new pairing code to connect again.") },
-            confirmButton = { TextButton(onClick = { confirmUnpair = false; h.unpair() }) { Text("Unpair") } },
-            dismissButton = { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
+            onDismissRequest = { confirmUnpair = null },
+            title = { Text("Unpair from ${mac.hostName}?") },
+            text = { Text("You will need to scan a new pairing code to connect to it again.") },
+            confirmButton = { TextButton(onClick = { confirmUnpair = null; h.unpair(mac.hostId) }) { Text("Unpair") } },
+            dismissButton = { TextButton(onClick = { confirmUnpair = null }) { Text("Cancel") } },
         )
     }
     if (composeText) SendTextDialog(onDismiss = { composeText = false }) { text ->
@@ -195,23 +215,22 @@ private fun HomeScreen(status: PhoneClient.Status) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        TopAppBar(
-            title = { Text("Handspan") },
-            actions = {
-                Box {
-                    IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "More") }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text("Unpair") }, onClick = { menu = false; confirmUnpair = true })
-                    }
-                }
-            },
-        )
+        TopAppBar(title = { Text("Handspan") })
         LazyColumn(
             Modifier.fillMaxSize(),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item { StatusCard(host ?: "Mac", status, onRetry = h::networkChanged) }
+            item {
+                MacsCard(
+                    hosts = hosts,
+                    connectedHostId = connectedHostId,
+                    status = status,
+                    onRetry = h::networkChanged,
+                    onUnpair = { confirmUnpair = it },
+                    onPairAnother = onPairAnother,
+                )
+            }
             item {
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -269,22 +288,61 @@ private fun HomeScreen(status: PhoneClient.Status) {
     }
 }
 
+/** The paired Macs: which one is connected, and the others' state. */
 @Composable
-private fun StatusCard(host: String, status: PhoneClient.Status, onRetry: () -> Unit) {
-    val (label, color) = when (status) {
-        PhoneClient.Status.CONNECTED -> "Connected" to Color(0xFF2E7D32)
-        PhoneClient.Status.CONNECTING -> "Looking for your Mac…" to MaterialTheme.colorScheme.tertiary
-        else -> "Not reachable. Check that both devices are on the same network" to MaterialTheme.colorScheme.outline
-    }
+private fun MacsCard(
+    hosts: List<HostPairing>,
+    connectedHostId: String?,
+    status: PhoneClient.Status,
+    onRetry: () -> Unit,
+    onUnpair: (HostPairing) -> Unit,
+    onPairAnother: () -> Unit,
+) {
     Card(Modifier.fillMaxWidth()) {
-        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(shape = CircleShape, color = color, modifier = Modifier.size(12.dp)) {}
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(host, style = MaterialTheme.typography.titleMedium)
-                Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(Modifier.padding(top = 8.dp, bottom = 4.dp)) {
+            for (mac in hosts) MacRow(mac, connectedHostId, status, onUnpair)
+            if (connectedHostId == null && status == PhoneClient.Status.OFFLINE) {
+                Row(Modifier.padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Check that the phone and the Mac are on the same network",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onRetry) { Text("Retry") }
+                }
             }
-            if (status == PhoneClient.Status.OFFLINE) TextButton(onClick = onRetry) { Text("Retry") }
+            TextButton(onClick = onPairAnother, modifier = Modifier.padding(horizontal = 8.dp)) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Pair another Mac")
+            }
+        }
+    }
+}
+
+@Composable
+private fun MacRow(mac: HostPairing, connectedHostId: String?, status: PhoneClient.Status, onUnpair: (HostPairing) -> Unit) {
+    var menu by remember { mutableStateOf(false) }
+    val connected = mac.hostId == connectedHostId
+    val (label, color) = when {
+        connected -> "Connected" to Color(0xFF2E7D32)
+        connectedHostId != null -> "Not connected" to MaterialTheme.colorScheme.outline
+        status == PhoneClient.Status.CONNECTING -> "Looking for it…" to MaterialTheme.colorScheme.tertiary
+        else -> "Not reachable" to MaterialTheme.colorScheme.outline
+    }
+    Row(Modifier.padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Surface(shape = CircleShape, color = color, modifier = Modifier.size(12.dp)) {}
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(mac.hostName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Box {
+            IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "Options for ${mac.hostName}") }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(text = { Text("Unpair") }, onClick = { menu = false; onUnpair(mac) })
+            }
         }
     }
 }

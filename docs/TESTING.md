@@ -6,7 +6,7 @@
 |---|---|
 | `macos/scripts/test.sh` | Shared vectors; keychain identity and certificate; host over real mutual TLS on loopback: handshake rejection of unpaired and wrong-key peers, bad pairing proof, pairing, clipboard both ways without echo, text and link items, file receive with resume, hash failure, decline, file send with resume, unpair |
 | `cd android && ./gradlew :core:test` | Shared vectors; framing; QR parsing; file names; incoming store resume across restart; out-of-order and corrupt chunks |
-| `scripts/interop.sh` | Kotlin `PhoneClient` against the Swift `HostService`: pairing (both sides derive the same code), clipboard both ways, links both ways, a 1.5 MB upload cut mid-way and resumed, a 900 KB download |
+| `scripts/interop.sh` | Kotlin `PhoneClient` against the Swift `HostService`: pairing (both sides derive the same code), clipboard both ways, links both ways, a 1.5 MB upload cut mid-way and resumed, a 900 KB download; two hosts standing in for two macOS accounts, with the phone following three account switches without pairing again |
 | `cd android && ./gradlew :app:lintDebug` | Android lint |
 
 `macos/scripts/test.sh` retries once when the Command Line Tools lose the Swift Testing macro
@@ -31,8 +31,22 @@ echo "text https://example.com" >> /tmp/host.cmd
 echo "send /path/to/file" >> /tmp/host.cmd      # Mac → phone file (accept on the phone)
 ```
 
-Host commands: `pair`, `clip <text>`, `text <text>`, `send <path>`, `quit`. The host auto-accepts
-incoming files and prints one JSON event per line.
+Host commands: `pair`, `clip <text>`, `text <text>`, `send <path>`, `suspend`, `resume`, `quit`.
+The host auto-accepts incoming files and prints one JSON event per line. Options: `--port <n>`
+(preferred port), `--name <name>` and `--advertise` (Bonjour).
+
+### Two accounts on one Mac
+
+Run two hosts with the same preferred port, as two accounts of one Mac would use 53999.
+`suspend` and `resume` do what switching accounts does to the real app.
+
+```sh
+tail -n +1 -f /tmp/a.cmd | handspan-host --port 53990 --name "Studio Mac (A)"
+echo suspend >> /tmp/a.cmd                      # switch away from A: frees the port
+tail -n +1 -f /tmp/b.cmd | handspan-host --port 53990 --name "Studio Mac (B)"
+echo pair >> /tmp/b.cmd                         # pair B too; A stays paired on the phone
+echo suspend >> /tmp/b.cmd; echo resume >> /tmp/a.cmd   # switch back: the phone reconnects to A
+```
 
 ## Manual checklist (real devices)
 
@@ -49,3 +63,6 @@ incoming files and prints one JSON event per line.
 - [ ] Reboot the phone → Handspan reconnects without being opened.
 - [ ] Unpair on the Mac → the phone returns to the pairing screen. Unpair on the phone → the Mac lists the device as removed.
 - [ ] Move the phone to a different network → the status says "Not reachable", and nothing connects.
+- [ ] Two accounts on the Mac, Handspan in both: pair the phone in each (**Pair another Mac**) → both are listed on the phone under their own names.
+- [ ] Switch accounts (fast user switching) → within a few seconds the phone shows the account on screen as **Connected**; clipboard and files go to that account. Switch back → it reconnects to the first account without pairing again.
+- [ ] Unpair one Mac on the phone → the other stays paired and connects.
