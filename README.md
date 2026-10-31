@@ -51,7 +51,8 @@ If macOS keeps saying **"Handspan can't be opened"** after you allowed it, an ea
 is still pending: eject the Handspan disk image, log out and back in, then open the copy in
 Applications.
 
-Several accounts can run Handspan at the same time; each pairs with its own phone.
+Several accounts can run Handspan at the same time, and one phone can pair with each of them; see
+[Several Macs and accounts](#several-macs-and-accounts).
 
 ## How it works
 
