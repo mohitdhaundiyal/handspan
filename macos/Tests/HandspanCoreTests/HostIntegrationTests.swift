@@ -294,4 +294,27 @@ func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping () -> Bool) asy
         try await waitUntil { self.phone.isClosed }
         try await expectRejected()
     }
+
+    /// Switching to another macOS account suspends the host; switching back resumes it
+    /// without pairing again.
+    @Test func suspendDropsConnectionsUntilResumed() async throws {
+        try await pair()
+        try await waitUntil { self.host.snapshot().devices.first?.online == true }
+
+        host.suspend()
+        try await waitUntil { self.phone.isClosed }
+        let suspended = host.snapshot()
+        #expect(suspended.suspended && suspended.port == nil)
+        #expect(suspended.devices.map(\.online) == [false])
+        let probe = PhoneSim(identity: phone.identity)
+        try await probe.connect(port: port, hostId: host.identity.deviceId)
+        #expect(!probe.isReady)
+
+        host.resume()
+        try await waitUntil { self.host.snapshot().port != nil }
+        port = host.snapshot().port!
+        try await phone.connect(port: port, hostId: host.identity.deviceId)
+        #expect(try await phone.hello().paired == true)
+        #expect(!host.snapshot().suspended)
+    }
 }

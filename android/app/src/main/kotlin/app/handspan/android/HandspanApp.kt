@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import app.handspan.core.HostPairing
 import app.handspan.core.ItemKind
 import app.handspan.core.Offer
 import app.handspan.core.OfferItem
@@ -64,9 +65,15 @@ class Handspan(private val app: Application) {
     private val pairingStore = PrefsPairingStore(app)
     private val clipboard = app.getSystemService(ClipboardManager::class.java)
 
-    private val _status = MutableStateFlow(if (pairingStore.load() == null) PhoneClient.Status.UNPAIRED else PhoneClient.Status.OFFLINE)
+    private val _status = MutableStateFlow(if (pairingStore.load().isEmpty()) PhoneClient.Status.UNPAIRED else PhoneClient.Status.OFFLINE)
     val status: StateFlow<PhoneClient.Status> = _status.asStateFlow()
-    private val _hostName = MutableStateFlow(pairingStore.load()?.hostName)
+    /** Paired Macs, most recently connected first. */
+    private val _hosts = MutableStateFlow(pairingStore.load())
+    val hosts: StateFlow<List<HostPairing>> = _hosts.asStateFlow()
+    private val _connectedHostId = MutableStateFlow<String?>(null)
+    val connectedHostId: StateFlow<String?> = _connectedHostId.asStateFlow()
+    /** The connected Mac, or else the most recently connected one. */
+    private val _hostName = MutableStateFlow(_hosts.value.firstOrNull()?.hostName)
     val hostName: StateFlow<String?> = _hostName.asStateFlow()
     private val _transfers = MutableStateFlow<List<TransferProgress>>(emptyList())
     val transfers: StateFlow<List<TransferProgress>> = _transfers.asStateFlow()
@@ -97,7 +104,7 @@ class Handspan(private val app: Application) {
         fun transfers(list: List<TransferProgress>)
     }
 
-    private val discovery = Discovery(app, { pairingStore.load()?.hostId }) { client.wake() }
+    private val discovery = Discovery(app, { pairingStore.load().map { it.hostId } }) { client.wake() }
 
     private val client: PhoneClient = PhoneClient(
         identity = KeystoreIdentity.loadOrCreate(),
@@ -106,10 +113,10 @@ class Handspan(private val app: Application) {
         partsDir = File(app.filesDir, "parts"),
         sink = MediaStoreSink(app),
         listener = Listener(),
-        discoveredAddresses = { discovery.addresses },
+        discoveredAddresses = discovery::addresses,
     ).also { it.setClipboardSync(_syncEnabled.value) }
 
-    val isPaired: Boolean get() = pairingStore.load() != null
+    val isPaired: Boolean get() = pairingStore.load().isNotEmpty()
 
     private var started = false
 
@@ -127,7 +134,7 @@ class Handspan(private val app: Application) {
 
     private var lastRetry = 0L
 
-    /** Looks for the Mac again now: the network changed or the user asked to retry. */
+    /** Looks for the paired Macs again now: the network changed or the user asked to retry. */
     fun networkChanged() {
         val now = android.os.SystemClock.elapsedRealtime()
         if (now - lastRetry < 2_000) return
@@ -145,7 +152,7 @@ class Handspan(private val app: Application) {
         return true
     }
 
-    fun unpair() = client.unpair()
+    fun unpair(hostId: String) = client.unpair(hostId)
 
     fun setSyncEnabled(enabled: Boolean) {
         _syncEnabled.value = enabled
@@ -208,14 +215,21 @@ class Handspan(private val app: Application) {
     private inner class Listener : PhoneListener {
         override fun onStatus(status: PhoneClient.Status) = ui {
             _status.value = status
-            _hostName.value = pairingStore.load()?.hostName
+            notifier?.statusChanged()
+        }
+
+        override fun onHosts(hosts: List<HostPairing>, connectedHostId: String?) = ui {
+            _hosts.value = hosts
+            _connectedHostId.value = connectedHostId
+            _hostName.value = (hosts.firstOrNull { it.hostId == connectedHostId } ?: hosts.firstOrNull())?.hostName
             notifier?.statusChanged()
         }
 
         override fun onPaired(hostName: String, code: String) = ui {
             _pairing.value = false
-            _hostName.value = hostName
             _pairedResult.value = UiEvent.Paired(hostName, code)
+            // Discovery may already have seen the new Mac before it was paired.
+            discovery.refresh()
             notifier?.statusChanged()
         }
 
@@ -224,11 +238,10 @@ class Handspan(private val app: Application) {
             _events.tryEmit(UiEvent.Message(reason))
         }
 
-        override fun onUnpaired() = ui {
-            _hostName.value = null
+        override fun onUnpaired(hostName: String) = ui {
             _offers.value.forEach { notifier?.offerResolved(it.offer.xferId) }
             _offers.value = emptyList()
-            _events.tryEmit(UiEvent.Message("This phone is no longer paired with the Mac"))
+            _events.tryEmit(UiEvent.Message("No longer paired with $hostName"))
             notifier?.statusChanged()
         }
 

@@ -10,6 +10,7 @@ import android.provider.OpenableColumns
 import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import androidx.core.content.edit
 import app.handspan.core.FileSource
 import app.handspan.core.HostPairing
 import app.handspan.core.PairingStore
@@ -62,16 +63,27 @@ object KeystoreIdentity {
     }
 }
 
+/** The paired Macs as JSON. Version 1.0 stored a single Mac under [LEGACY_KEY]; it is read as a one-entry list. */
 class PrefsPairingStore(context: Context) : PairingStore {
     private val prefs = context.getSharedPreferences("pairing", Context.MODE_PRIVATE)
 
-    override fun load(): HostPairing? =
-        prefs.getString("host", null)?.let { runCatching { WireJson.decodeFromString<HostPairing>(it) }.getOrNull() }
+    override fun load(): List<HostPairing> {
+        prefs.getString(KEY, null)?.let { json ->
+            return runCatching { WireJson.decodeFromString<List<HostPairing>>(json) }.getOrDefault(emptyList())
+        }
+        return listOfNotNull(prefs.getString(LEGACY_KEY, null)?.let { runCatching { WireJson.decodeFromString<HostPairing>(it) }.getOrNull() })
+    }
 
-    override fun save(pairing: HostPairing?) {
-        prefs.edit().apply {
-            if (pairing == null) remove("host") else putString("host", WireJson.encodeToString(pairing))
-        }.apply()
+    override fun save(hosts: List<HostPairing>) {
+        prefs.edit {
+            putString(KEY, WireJson.encodeToString(hosts))
+            remove(LEGACY_KEY)
+        }
+    }
+
+    private companion object {
+        const val KEY = "hosts"
+        const val LEGACY_KEY = "host"
     }
 }
 

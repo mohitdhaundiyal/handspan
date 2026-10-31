@@ -15,17 +15,19 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Browses `_handspan._tcp` and keeps the addresses of instances whose TXT `id`
- * matches the paired host (PROTOCOL §2). [onFound] fires when a match appears.
+ * matches one of the paired hosts (PROTOCOL §2). [onFound] fires when a match appears.
  *
  * Android stops a browse when the network it started on goes away (Wi-Fi
  * reconnects, router restarts), so the browse is restarted whenever that
  * happens, on [refresh], and when it has found nothing for a while.
  */
-class Discovery(context: Context, private val hostIdProvider: () -> String?, private val onFound: () -> Unit) {
+class Discovery(context: Context, private val pairedHostIds: () -> Collection<String>, private val onFound: () -> Unit) {
     private val nsd = context.getSystemService(NsdManager::class.java)
     private val wifi = context.applicationContext.getSystemService(WifiManager::class.java)
     private val executor = Executors.newSingleThreadScheduledExecutor()
-    private val found = ConcurrentHashMap<String, List<String>>()
+    private data class Instance(val hostId: String, val addresses: List<String>)
+
+    private val found = ConcurrentHashMap<String, Instance>()
     private val callbacks = ConcurrentHashMap<String, NsdManager.ServiceInfoCallback>()
     private var multicastLock: WifiManager.MulticastLock? = null
     private var browsing: NsdManager.DiscoveryListener? = null
@@ -34,13 +36,11 @@ class Discovery(context: Context, private val hostIdProvider: () -> String?, pri
     private val resolveQueue = ArrayDeque<NsdServiceInfo>()
     private var resolving = false
 
-    /** Current addresses of the paired host. Restarts a browse that has gone quiet. */
-    val addresses: List<String>
-        get() {
-            val current = found.values.flatten().distinct()
-            if (current.isEmpty() && SystemClock.elapsedRealtime() - startedAt > STALE_MS) executor.execute(::restart)
-            return current
-        }
+    /** Current addresses of a paired host. Restarts a browse that has found nothing for a while. */
+    fun addresses(hostId: String): List<String> {
+        if (found.isEmpty() && SystemClock.elapsedRealtime() - startedAt > STALE_MS) executor.execute(::restart)
+        return found.values.filter { it.hostId == hostId }.flatMap { it.addresses }.distinct()
+    }
 
     @Synchronized
     fun start() {
@@ -143,16 +143,15 @@ class Discovery(context: Context, private val hostIdProvider: () -> String?, pri
     }
 
     private fun record(info: NsdServiceInfo, hosts: List<InetAddress>) {
-        val hostId = hostIdProvider() ?: return
-        val id = info.attributes["id"]?.decodeToString() ?: return
-        if (id.length != 16 || !hostId.startsWith(id)) return
+        val id = info.attributes["id"]?.decodeToString()?.takeIf { it.length == 16 } ?: return
+        val hostId = pairedHostIds().firstOrNull { it.startsWith(id) } ?: return
         // Link-local IPv6 needs a scope ID that does not survive as text. IPv4 comes first:
         // it is stable for the lease, while global IPv6 addresses are often temporary.
         val addresses = hosts.filterNot { it is Inet6Address && it.isLinkLocalAddress }
             .map { if (it is Inet6Address) "[${it.hostAddress}]:${info.port}" else "${it.hostAddress}:${info.port}" }
             .sortedBy { it.startsWith("[") }
         if (addresses.isEmpty()) return
-        found[info.serviceName] = addresses
+        found[info.serviceName] = Instance(hostId, addresses)
         onFound()
     }
 

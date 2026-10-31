@@ -147,10 +147,11 @@ class HandspanService : Service(), Handspan.Notifier {
     private fun statusNotification(): Notification {
         val status = handspan.status.value
         val host = handspan.hostName.value ?: "Mac"
+        val several = handspan.hosts.value.size > 1
         val text = when (status) {
             PhoneClient.Status.CONNECTED -> "Connected to $host"
-            PhoneClient.Status.CONNECTING -> "Looking for $host…"
-            PhoneClient.Status.OFFLINE -> "$host is not reachable on this network"
+            PhoneClient.Status.CONNECTING -> if (several) "Looking for your Macs…" else "Looking for $host…"
+            PhoneClient.Status.OFFLINE -> if (several) "None of your Macs is reachable on this network" else "$host is not reachable on this network"
             PhoneClient.Status.UNPAIRED -> "Pairing…"
         }
         val sendClipboard = PendingIntent.getActivity(

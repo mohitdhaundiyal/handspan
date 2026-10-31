@@ -60,15 +60,18 @@ public final class HostService {
         public var pairing: PairingWindow?
         public var transfers: [TransferProgress] = []
         public var clipboardSyncEnabled = true
+        /// True while `suspend()` is in effect: not listening, not advertising, no connections.
+        public var suspended = false
 
         public init() {}
 
-        init(port: UInt16?, devices: [DeviceStatus], pairing: PairingWindow?, transfers: [TransferProgress], clipboardSyncEnabled: Bool) {
+        init(port: UInt16?, devices: [DeviceStatus], pairing: PairingWindow?, transfers: [TransferProgress], clipboardSyncEnabled: Bool, suspended: Bool) {
             self.port = port
             self.devices = devices
             self.pairing = pairing
             self.transfers = transfers
             self.clipboardSyncEnabled = clipboardSyncEnabled
+            self.suspended = suspended
         }
     }
 
@@ -94,6 +97,7 @@ public final class HostService {
     private var lastAppliedClip: String?
     private var lastSentClip: String?
     private var syncEnabled = true
+    private var suspended = false
     private var timer: DispatchSourceTimer?
     private var lastProgressPush = Date.distantPast
 
@@ -118,7 +122,7 @@ public final class HostService {
 
     public func start() {
         queue.async { [self] in
-            startListener(port: NWEndpoint.Port(rawValue: config.preferredPort) ?? .any)
+            startListener()
             let timer = DispatchSource.makeTimerSource(queue: queue)
             timer.schedule(deadline: .now() + 5, repeating: 5)
             timer.setEventHandler { [weak self] in self?.tick() }
@@ -137,13 +141,48 @@ public final class HostService {
         }
     }
 
-    private func startListener(port: NWEndpoint.Port) {
+    /// Stops listening and advertising and closes every connection, for example while
+    /// another macOS account is active. Outgoing transfers wait for `resume()`.
+    public func suspend() {
+        queue.async { [self] in
+            guard !suspended else { return }
+            suspended = true
+            listener?.cancel()
+            listener = nil
+            port = nil
+            pairing = nil
+            for session in sessions.values { session.conn.close() }
+            log("Paused while this account is not active")
+            pushSnapshot()
+        }
+    }
+
+    public func resume() {
+        queue.async { [self] in
+            guard suspended else { return }
+            suspended = false
+            log("Resumed")
+            startListener()
+            pushSnapshot()
+        }
+    }
+
+    /// Listens on the preferred port, falling back to any free port. Another account's
+    /// Handspan may still be releasing the preferred port after an account switch, so it is
+    /// retried a few times first.
+    private func startListener(retries: Int = 3) {
+        let preferred = NWEndpoint.Port(rawValue: config.preferredPort) ?? .any
+        startListener(port: retries > 0 ? preferred : .any, retries: retries)
+    }
+
+    private func startListener(port: NWEndpoint.Port, retries: Int) {
+        guard !suspended, listener == nil else { return }
         let params = TLS.parameters(identity: identity, queue: queue) { [weak self] peerId in
             self?.admit(peerId) ?? false
         }
         params.allowLocalEndpointReuse = true
         guard let listener = try? NWListener(using: params, on: port) else {
-            if port != .any { startListener(port: .any) }
+            if port != .any { startListener(retries: 0) }
             return
         }
         if config.advertise {
@@ -162,7 +201,9 @@ public final class HostService {
                 listener.cancel()
                 if self.listener === listener {
                     self.listener = nil
-                    if port != .any { startListener(port: .any) }
+                    if port != .any {
+                        queue.asyncAfter(deadline: .now() + 1) { self.startListener(retries: retries - 1) }
+                    }
                 }
             default:
                 break
@@ -622,7 +663,8 @@ public final class HostService {
             devices: store.devices.sorted { $0.pairedAt < $1.pairedAt }.map { DeviceStatus(device: $0, online: active[$0.id] != nil) },
             pairing: pairing,
             transfers: progressOrder.reversed().compactMap { progress[$0] },
-            clipboardSyncEnabled: syncEnabled
+            clipboardSyncEnabled: syncEnabled,
+            suspended: suspended
         )
     }
 
