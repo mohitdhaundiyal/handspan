@@ -26,10 +26,32 @@ Older versions and checksums are on the Releases page.
 **Android:** open the downloaded APK and allow your browser or file manager to install unknown
 apps when Android asks.
 
-**macOS:** open the DMG and drag Handspan onto the Applications folder. The app is not notarized by Apple, so
-the first launch is blocked: open **System Settings → Privacy & Security**, scroll down and click
-**Open Anyway** next to the Handspan message. Alternatively run
-`xattr -dr com.apple.quarantine /Applications/Handspan.app` once.
+**macOS:** open the DMG and drag Handspan onto the Applications folder. Always launch it from
+Applications, not from the open disk image: macOS runs apps started from a disk image from a
+temporary copy, and an approval for one copy does not carry over to the next.
+
+The app is not notarized by Apple, so macOS blocks the first launch. Allow it once in either way:
+
+- **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to the
+  Handspan message. On a standard (non-administrator) account this asks for an administrator's
+  name and password.
+- Or in Terminal: `xattr -dr com.apple.quarantine /Applications/Handspan.app`
+
+Installed in `/Applications`, Handspan works for every account on the Mac. Without an
+administrator, install it for your account only:
+
+```sh
+mkdir -p ~/Applications
+cp -R /Volumes/Handspan/Handspan.app ~/Applications/
+xattr -dr com.apple.quarantine ~/Applications/Handspan.app
+open ~/Applications/Handspan.app
+```
+
+If macOS keeps saying **"Handspan can't be opened"** after you allowed it, an earlier blocked copy
+is still pending: eject the Handspan disk image, log out and back in, then open the copy in
+Applications.
+
+Several accounts can run Handspan at the same time; each pairs with its own phone.
 
 ## How it works
 
